@@ -1,5 +1,6 @@
-# This fork's release: pushing a tag like v0.17.0-hs.1 tests and builds the signed phone APKs and publishes them
-# as a release, which is what Obtainium follows. Only the phone app: no watch, Pebble, desktop or Flatpak builds.
+# This fork's release: pushing a tag like v0.17.50 tests and builds the signed phone APKs and publishes them
+# as a release, which is what Obtainium follows. Fork versions are upstream's minor with a patch from 50 up
+# (numbers only: the desktop project refuses a suffix), so they sort after the upstream release they build on. Only the phone app: no watch, Pebble, desktop or Flatpak builds.
 # The upstream Release workflow (release.yml) answers the same tags and is switched off in this repository
 # (Actions → Release → Disable workflow), so the two never both run.
 #
