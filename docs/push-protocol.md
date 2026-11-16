@@ -32,8 +32,17 @@ slash command, and Herald calls it without a session: `command.dispatch {name: "
 process, so a person allowed to chat with a bot can't register their own phone. Other operations:
 `info`, `unregister <device_id>` and `test <device_id>` (sends a `ping`). Each answers with one JSON object.
 
+A gateway that serves the socket itself (`gateway.ready` `session_authority`, one gateway for several
+profiles) runs `command.dispatch` inside a chat and refuses one sent without, as `not_found`
+(gateway/session_commands.py `execute_command`). There Herald calls the plugin's own method, which Hermes
+serves without a chat (gateway/session_plugin_rpc.py): `plugin.herald-push.command {arg: "register <json>"}`,
+from plugin 0.8.0. It takes the same argument string and answers with the same object, not wrapped in a
+command result. Hermes serves it only over the authenticated socket, to a client allowed to control sessions.
+Such a gateway has no `plugins.manage` either, so Herald can't install or update the plugin there: it says
+which command to run on the gateway (`hermes plugins install <repository> --ref <commit> --force --enable`).
+
 If the gateway lacks the plugin, Herald installs it with `plugins.manage {action: "install", identifier:
-"https://github.com/Giton22/hermes-herald-push", ref: <commit>, enable: true}`. That is the same call
+"https://github.com/HydraSquid/hermes-herald-push", ref: <commit>, enable: true}`. That is the same call
 Desktop's Plugins hub makes, and the plugin is live without a restart. `ref` pins the exact commit Herald was
 built against, so a later change to the repository never reaches a gateway unreviewed. A copy that is
 present but switched off is switched on (`plugins.manage {action: "toggle"}`) rather than reinstalled, and

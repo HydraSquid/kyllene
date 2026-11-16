@@ -157,6 +157,8 @@ class PushApi(private val connection: GatewayConnection) {
         try {
             doInstall(force, profile, enabled)
         } catch (e: RpcException) {
+            // A gateway that serves the socket itself has no plugins.manage: only its own command line installs.
+            if (e.code == UNKNOWN_METHOD) throw RpcException(e.code, INSTALL_BY_HAND, e.reason)
             throw RpcException(e.code, briefError(e.message), e.reason)
         }
     }
@@ -325,6 +327,9 @@ class PushApi(private val connection: GatewayConnection) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // No plugins.manage at all (a gateway that serves the socket itself): there is nothing to look at
+                // from here, for any profile, and nothing this app could replace.
+                if (e is RpcException && e.code == UNKNOWN_METHOD) return ScannedBots(rpc, emptyList(), failures)
                 failures += "${bot.name}: ${briefError(e.message)}"
                 null
             }
@@ -431,8 +436,13 @@ class PushApi(private val connection: GatewayConnection) {
 
     /** What `/herald-push <arg>` printed, or null when the plugin isn't loaded. */
     private suspend fun output(arg: String): String? {
+        val rpc = client()
+        // A gateway whose socket runs on its session authority (one gateway shared by several profiles) runs
+        // command.dispatch inside a chat (gateway/session_commands.py execute_command) and refuses one without,
+        // as `not_found`. The plugin's own method (gateway/session_plugin_rpc.py) needs no chat.
+        if (rpc.sessionAuthority) return method(rpc, arg)
         val reply = try {
-            client().request(
+            rpc.request(
                 "command.dispatch",
                 buildJsonObject {
                     put("name", PLUGIN_COMMAND)
@@ -449,18 +459,38 @@ class PushApi(private val connection: GatewayConnection) {
         return (obj["output"] as? JsonPrimitive)?.contentOrNull
     }
 
+    /**
+     * `plugin.herald-push.command`: the same operations, answered as the object the command prints. Null when the
+     * gateway has no such method: the plugin isn't loaded, or is older than [METHOD_PLUGIN_VERSION].
+     */
+    private suspend fun method(rpc: JsonRpcClient, arg: String): String? {
+        val reply = try {
+            rpc.request(PLUGIN_METHOD, buildJsonObject { put("arg", arg) })
+        } catch (e: RpcException) {
+            if (e.code == UNKNOWN_METHOD) return null
+            throw e
+        }
+        return (reply as? JsonObject)?.toString()
+    }
+
     private fun client(): JsonRpcClient = (connection.state.value as? ConnectionState.Connected)?.client
         ?: throw RpcException(0, "Not connected to the gateway.")
 
     companion object {
         const val PLUGIN_COMMAND = "herald-push"
-        const val PLUGIN_REPO = "https://github.com/Giton22/hermes-herald-push"
+        const val PLUGIN_REPO = "https://github.com/HydraSquid/hermes-herald-push"
+
+        /** The plugin's own JSON-RPC method (Hermes names it `plugin.<plugin id>.<name>`), `{"arg": "info"}`. */
+        const val PLUGIN_METHOD = "plugin.$PLUGIN_COMMAND.command"
+
+        /** The oldest plugin that serves [PLUGIN_METHOD]: what a gateway that shares its socket needs. */
+        const val METHOD_PLUGIN_VERSION = "0.8.0"
 
         /** The plugin commit this Herald was built and reviewed against. */
-        const val PLUGIN_REF = "47297c5e2e2779e6895736e46f6e79ad91050e1d"
+        const val PLUGIN_REF = "6109b76b32768c267d37f9b4c350cd06e97482a9"
 
         /** The version at [PLUGIN_REF]: an older copy on the gateway is offered this as an update. */
-        const val PLUGIN_VERSION = "0.7.2"
+        const val PLUGIN_VERSION = "0.8.0"
 
         /** The oldest plugin this Herald works with; an older copy waits for the user to update it. */
         const val MIN_PLUGIN_VERSION = "0.1.1"
@@ -471,6 +501,11 @@ class PushApi(private val connection: GatewayConnection) {
         /** The oldest plugin that lists, orders and removes phones; older ones work without the list. */
         const val PHONE_LIST_PLUGIN_VERSION = "0.3.1"
         private const val NOT_A_COMMAND = 4018
+        private const val UNKNOWN_METHOD = -32601
+
+        /** What a gateway that can't install plugins over the socket is told to run; shown whole, never cut. */
+        const val INSTALL_BY_HAND = "This gateway only installs plugins from its own command line. Run there: " +
+            "hermes plugins install $PLUGIN_REPO --ref $PLUGIN_REF --force --enable"
         private const val INSTALL_TIMEOUT_MS = 180_000L
         private const val BRIEF_ERROR_CHARS = 160
 
