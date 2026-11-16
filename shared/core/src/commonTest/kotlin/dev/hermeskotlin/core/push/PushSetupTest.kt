@@ -267,11 +267,15 @@ class PushSetupTest {
         val keys = FakeKeys()
         val s = setup(keys)
         val gateway = FakeGateway(installed = true, authority = true)
+        // A bot whose copy can't be looked at there (no plugins.manage): nothing to say about it.
+        gateway.profiles["side"] = null
         connect(s, gateway)
         s.setup.enable()
 
         // Its command.dispatch wants a chat and answers `not_found` without one: never sent there.
-        assertEquals(listOf(PushApi.PLUGIN_METHOD), gateway.calls.map { (it["method"] as JsonPrimitive).content }.distinct())
+        val methods = gateway.calls.map { (it["method"] as JsonPrimitive).content }
+        assertFalse("command.dispatch" in methods)
+        assertEquals(2, methods.count { it == PushApi.PLUGIN_METHOD })
         assertEquals(listOf("info", "register"), gateway.actions())
         assertEquals(setOf("device-1"), gateway.registered)
         assertEquals(gatewayKeys, keys.pinned("https://a.example"))
