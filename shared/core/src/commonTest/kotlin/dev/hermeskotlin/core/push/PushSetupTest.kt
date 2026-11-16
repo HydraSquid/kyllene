@@ -77,6 +77,12 @@ class PushSetupTest {
         var enabled: Boolean = installed,
         var version: String = PushApi.PLUGIN_VERSION,
         val latest: String = PushApi.PLUGIN_VERSION,
+        /**
+         * A gateway that serves the socket on its session authority (gateway/session_controls.py): no
+         * `plugins.manage`, `command.dispatch` only inside a chat, and the plugin's own method from
+         * [PushApi.METHOD_PLUGIN_VERSION] on.
+         */
+        val authority: Boolean = false,
     ) {
         val profiles = mutableMapOf<String, Copy?>()
         val failedProfiles = mutableSetOf<String>()
@@ -101,12 +107,23 @@ class PushSetupTest {
                         "profiles.list" -> if (profileListFails) "ERROR:profiles unavailable" else if (profilesSupported) buildJsonObject {
                             put("profiles", JsonArray(profiles.keys.map { name -> buildJsonObject { put("name", name) } }))
                         }.toString() else "UNSUPPORTED"
-                        "plugins.manage" -> manage(params)
-                        "command.dispatch" -> if (!(installed && enabled)) null else command(params["arg"]!!.jsonPrimitive.content)
+                        "plugins.manage" -> if (authority) "UNSUPPORTED" else manage(params)
+                        "command.dispatch" -> when {
+                            authority -> "NOT_FOUND"
+                            !(installed && enabled) -> null
+                            else -> command(params["arg"]!!.jsonPrimitive.content)
+                        }
+                        PushApi.PLUGIN_METHOD -> when {
+                            !(authority && installed && enabled) -> "UNSUPPORTED"
+                            !PushPluginReply(version = version).versionAtLeast(PushApi.METHOD_PLUGIN_VERSION) -> "UNSUPPORTED"
+                            else -> output(params["arg"]!!.jsonPrimitive.content).toString()
+                        }
                         else -> "{}"
                     }
                     transport.push(
                         when {
+                            // The authority's refusal of a command sent without a chat (RuntimeStoreError).
+                            reply == "NOT_FOUND" -> """{"jsonrpc":"2.0","id":$id,"error":{"code":4001,"message":"not_found","data":{"reason":"not_found"}}}"""
                             reply == "UNSUPPORTED" -> """{"jsonrpc":"2.0","id":$id,"error":{"code":-32601,"message":"unknown method"}}"""
                             reply == null -> """{"jsonrpc":"2.0","id":$id,"error":{"code":4018,"message":"not a command"}}"""
                             reply.startsWith("ERROR:") -> """{"jsonrpc":"2.0","id":$id,"error":{"code":5026,"message":"${reply.removePrefix("ERROR:")}"}}"""
@@ -162,9 +179,15 @@ class PushSetupTest {
             }
         }
 
-        private suspend fun command(arg: String): String {
+        private suspend fun command(arg: String): String =
+            HermesJson.encodeToString(JsonObject.serializer(), buildJsonObject {
+                put("type", "plugin")
+                put("output", output(arg).toString())
+            })
+
+        private suspend fun output(arg: String): JsonObject {
             val (op, rest) = arg.split(" ", limit = 2).let { it[0] to it.getOrElse(1) { "" } }
-            val output = when (op) {
+            return when (op) {
                 "info" -> {
                     holdInfo?.await()
                     holdInfo = null
@@ -186,10 +209,6 @@ class PushSetupTest {
                 "unregister" -> buildJsonObject { put("ok", registered.remove(rest)) }
                 else -> buildJsonObject { put("ok", false) }
             }
-            return HermesJson.encodeToString(JsonObject.serializer(), buildJsonObject {
-                put("type", "plugin")
-                put("output", output.toString())
-            })
         }
 
         fun actions(): List<String> = calls.mapNotNull { call ->
@@ -220,7 +239,7 @@ class PushSetupTest {
         transports += transport
         gateway.serve(backgroundScope, transport)
         s.connection.start(GatewayUrl.parse(url))
-        transport.push(FakeTransport.READY)
+        transport.push(if (gateway.authority) AUTHORITY_READY else FakeTransport.READY)
         s.connection.state.first { it is ConnectionState.Connected }
         return transport
     }
@@ -241,6 +260,52 @@ class PushSetupTest {
         assertEquals(setOf("device-1"), gateway.registered)
         assertEquals(gatewayKeys, keys.pinned("https://a.example"))
         assertEquals(PushStatus.State.On, s.setup.status.value.state)
+    }
+
+    @Test
+    fun aGatewayThatSharesItsSocketIsAskedThroughThePluginsOwnMethod() = runTest {
+        val keys = FakeKeys()
+        val s = setup(keys)
+        val gateway = FakeGateway(installed = true, authority = true)
+        // A bot whose copy can't be looked at there (no plugins.manage): nothing to say about it.
+        gateway.profiles["side"] = null
+        connect(s, gateway)
+        s.setup.enable()
+
+        // Its command.dispatch wants a chat and answers `not_found` without one: never sent there.
+        val methods = gateway.calls.map { (it["method"] as JsonPrimitive).content }
+        assertFalse("command.dispatch" in methods)
+        // "list" is the look at the bot's copy, refused as an unknown method and left at that.
+        assertEquals(listOf("info", "list", "register"), gateway.actions())
+        assertEquals(listOf(PushApi.PLUGIN_METHOD, "plugins.manage", PushApi.PLUGIN_METHOD), methods.filter { it == PushApi.PLUGIN_METHOD || it == "plugins.manage" })
+        assertEquals(setOf("device-1"), gateway.registered)
+        assertEquals(gatewayKeys, keys.pinned("https://a.example"))
+        assertEquals(PushStatus.State.On, s.setup.status.value.state)
+        assertNull(s.setup.status.value.detail)
+    }
+
+    @Test
+    fun aGatewayThatSharesItsSocketSaysHowToInstallThePluginByHand() = runTest {
+        installedByHand(FakeGateway(installed = false, authority = true))
+    }
+
+    @Test
+    fun aPluginTooOldForASharedSocketIsInstalledByHandToo() = runTest {
+        // Without the method it looks the same from here as no plugin at all.
+        installedByHand(FakeGateway(installed = true, version = "0.7.2", authority = true))
+    }
+
+    private suspend fun TestScope.installedByHand(gateway: FakeGateway) {
+        val s = setup(FakeKeys())
+        connect(s, gateway)
+        s.setup.enable()
+
+        assertEquals(PushStatus.State.Failed, s.setup.status.value.state)
+        val said = s.setup.status.value.detail.orEmpty()
+        // Whole, never cut short: it is a command to copy.
+        assertEquals(PushApi.INSTALL_BY_HAND, said)
+        assertTrue("--ref ${PushApi.PLUGIN_REF}" in said && PushApi.PLUGIN_REPO in said)
+        assertTrue(gateway.registered.isEmpty())
     }
 
     @Test
@@ -561,5 +626,10 @@ class PushSetupTest {
         assertTrue(gateway.registered.isEmpty())
         assertNull(keys.pinnedGatewayUrl())
         assertEquals(PushStatus.State.Off, s.setup.status.value.state)
+    }
+
+    private companion object {
+        const val AUTHORITY_READY =
+            """{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"heartbeat":true,"replay_epoch":"e1","session_authority":true}}}"""
     }
 }
