@@ -275,8 +275,9 @@ class PushSetupTest {
         // Its command.dispatch wants a chat and answers `not_found` without one: never sent there.
         val methods = gateway.calls.map { (it["method"] as JsonPrimitive).content }
         assertFalse("command.dispatch" in methods)
-        assertEquals(2, methods.count { it == PushApi.PLUGIN_METHOD })
-        assertEquals(listOf("info", "register"), gateway.actions())
+        // "list" is the look at the bot's copy, refused as an unknown method and left at that.
+        assertEquals(listOf("info", "list", "register"), gateway.actions())
+        assertEquals(listOf(PushApi.PLUGIN_METHOD, "plugins.manage", PushApi.PLUGIN_METHOD), methods.filter { it != "profiles.list" })
         assertEquals(setOf("device-1"), gateway.registered)
         assertEquals(gatewayKeys, keys.pinned("https://a.example"))
         assertEquals(PushStatus.State.On, s.setup.status.value.state)
