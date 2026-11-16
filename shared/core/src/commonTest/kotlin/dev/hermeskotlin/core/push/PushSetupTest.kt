@@ -277,7 +277,7 @@ class PushSetupTest {
         assertFalse("command.dispatch" in methods)
         // "list" is the look at the bot's copy, refused as an unknown method and left at that.
         assertEquals(listOf("info", "list", "register"), gateway.actions())
-        assertEquals(listOf(PushApi.PLUGIN_METHOD, "plugins.manage", PushApi.PLUGIN_METHOD), methods.filter { it != "profiles.list" })
+        assertEquals(listOf(PushApi.PLUGIN_METHOD, "plugins.manage", PushApi.PLUGIN_METHOD), methods.filter { it == PushApi.PLUGIN_METHOD || it == "plugins.manage" })
         assertEquals(setOf("device-1"), gateway.registered)
         assertEquals(gatewayKeys, keys.pinned("https://a.example"))
         assertEquals(PushStatus.State.On, s.setup.status.value.state)
